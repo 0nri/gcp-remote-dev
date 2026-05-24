@@ -1,0 +1,191 @@
+================================================================================
+  GCP Remote Dev VM — Client Setup Guide
+  VM: remote-dev  |  User: <VM_USER>  |  Access: IAP Tunnel (no public IP)
+================================================================================
+
+This guide covers everything needed on each client machine (Mac, Windows, Linux)
+to connect to the remote-dev VM via VS Code Remote SSH.
+
+Prerequisites on the client:
+  - gcloud CLI installed and authenticated (gcloud auth login)
+  - VS Code with the "Remote - SSH" extension installed
+
+================================================================================
+STEP 1 — Bootstrap SSH key (first time only)
+================================================================================
+
+The VM uses public-key SSH authentication. Your public key must be in the VM's
+~/.ssh/authorized_keys before 'ssh remote-dev' will work. Two options:
+
+Option A — gcloud compute ssh (easiest, no config.env change needed):
+
+  gcloud compute ssh remote-dev \
+    --tunnel-through-iap \
+    --zone=us-west1-b \
+    --project=YOUR_PROJECT_ID
+
+  This generates ~/.ssh/google_compute_engine if it doesn't exist, uploads
+  the public key to GCP metadata, and the VM syncs it to authorized_keys.
+  Run this ONCE — all subsequent connections use ~/.ssh/config (Step 2).
+  Note: use IdentityFile ~/.ssh/google_compute_engine in your SSH config (see Step 2).
+
+Option B — set SSH_PUBLIC_KEY in config.env before provisioning:
+
+  Paste the contents of your public key (e.g. cat ~/.ssh/id_ed25519.pub)
+  into SSH_PUBLIC_KEY in config.env. The startup script writes it to
+  authorized_keys at first boot — no gcloud compute ssh needed.
+  Note: use IdentityFile ~/.ssh/id_ed25519 (or your key) in your SSH config.
+
+================================================================================
+STEP 2 — Add to ~/.ssh/config
+================================================================================
+
+Open ~/.ssh/config (create it if it doesn't exist) and add:
+
+  # ── GCP Remote Dev VM ──────────────────────────────────────────────────────
+  Host remote-dev
+    HostName remote-dev
+    User <VM_USER>                 # ← replace with your VM_USER value from config.env
+    IdentityFile ~/.ssh/google_compute_engine   # ← or your key if you used Option B
+    ForwardAgent yes
+    ProxyCommand gcloud compute start-iap-tunnel %h %p \
+      --listen-on-stdin \
+      --zone=us-west1-b \
+      --project=YOUR_PROJECT_ID
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+  # ───────────────────────────────────────────────────────────────────────────
+
+Replace YOUR_PROJECT_ID with your actual GCP project ID.
+
+Note: The ProxyCommand tunnels SSH through Google's IAP — no SSH port is
+      exposed to the internet. The VM has no public IP.
+
+================================================================================
+STEP 3 — MesloLGS NF Font (for Powerlevel10k)
+================================================================================
+
+The font must be installed on the CLIENT machine (not the VM).
+The VM only outputs text; the terminal on your client renders it.
+
+On macOS (via Homebrew):
+  brew install --cask font-meslo-lg-nerd-font
+
+Or download manually from:
+  https://github.com/romkatv/powerlevel10k#meslo-nerd-font-patched-for-powerlevel10k
+
+After installing, configure VS Code to use it:
+  1. Open VS Code settings (Cmd+, / Ctrl+,)
+  2. Search for "terminal font"
+  3. Set "Terminal > Integrated: Font Family" to: MesloLGS NF
+
+Or add this directly to your settings.json:
+  "terminal.integrated.fontFamily": "MesloLGS NF"
+
+================================================================================
+STEP 4 — GitHub Access via SSH Agent Forwarding
+================================================================================
+
+The SSH config above includes "ForwardAgent yes", which forwards your local
+SSH agent through the IAP tunnel. The VM uses your Mac's GitHub SSH key
+transparently — no key needs to live on the VM.
+
+To ensure your GitHub key is always available (even after a Mac restart),
+add UseKeychain yes to your existing GitHub SSH config entry:
+
+  # In ~/.ssh/config (update your existing github.com entry)
+  Host github.com
+    AddKeysToAgent yes
+    UseKeychain yes          ← add this line
+    IdentityFile ~/.ssh/github
+
+Then store it in the macOS Keychain once (if not already done):
+  ssh-add --apple-use-keychain ~/.ssh/github
+
+Verify agent forwarding works from the VM:
+  ssh -T git@github.com
+  # Expected: "Hi <your-github-username>! You've successfully authenticated..."
+
+For GitHub CLI (gh) — authenticate on first use from the VM terminal:
+  gh auth login --web
+  # Follow the prompts; enter the one-time code in your browser
+
+================================================================================
+STEP 5 — Connect with VS Code
+================================================================================
+
+Option A — VS Code Remote Explorer (recommended):
+  1. Click the Remote Explorer icon in the left sidebar
+  2. Under "SSH", you'll see "remote-dev"
+  3. Click the arrow to connect in current window, or folder icon for new window
+
+Option B — Command Palette:
+  1. Cmd+Shift+P → "Remote-SSH: Connect to Host..."
+  2. Select "remote-dev"
+
+Option C — Direct terminal SSH:
+  ssh remote-dev
+  # Or equivalently:
+  gcloud compute ssh remote-dev --tunnel-through-iap --zone=us-west1-b --project=YOUR_PROJECT_ID
+
+================================================================================
+STEP 6 — First-time VS Code Remote setup
+================================================================================
+
+On first connection, VS Code installs its server on the VM (~1 min).
+After connecting, install your desired extensions in the remote context:
+  - Claude Code (by Anthropic) — runs on the VM, uses the VM's claude-code CLI
+  - Any language extensions (Python, Go, etc.)
+
+Extensions installed in the remote window run on the VM, with access to
+  all tools: agy, claude, git, pyenv, gh, gcloud, etc.
+
+================================================================================
+STEP 7 — Using AI tools
+================================================================================
+
+In the VS Code integrated terminal (connected to the VM):
+
+  Antigravity CLI:
+    agy                       # interactive mode
+    agy -p "explain this"     # one-shot query
+
+  Claude Code:
+    claude                    # interactive mode
+    claude "help me refactor" # one-shot query
+
+  Authentication is automatic — the VM uses its GCP service account via
+  Workload Identity (no API keys required).
+
+Claude Code VS Code Extension:
+  Install the "Claude Code" extension in the remote window. It will
+  automatically use the claude CLI installed on the VM.
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+"Permission denied (publickey)":
+  - Did you complete Step 1 (bootstrap SSH key)?
+  - Is IdentityFile set in ~/.ssh/config and pointing to the right key?
+  - Run: ssh -v remote-dev  to see which keys SSH is trying
+
+"Startup script still running":
+  gcloud compute instances get-serial-port-output remote-dev \
+    --zone=us-west1-b --project=YOUR_PROJECT_ID | grep '\[startup\]'
+
+"Connection refused / timeout":
+  - Ensure gcloud is authenticated: gcloud auth login
+  - Ensure the VM is running: gcloud compute instances list
+  - Check startup script completed (see above)
+
+"Git push asks for password":
+  - Run: ssh-add -l  (check your key is in the agent on the CLIENT)
+  - Run: ssh-add --apple-use-keychain ~/.ssh/github  (re-add if missing)
+  - On the VM: ssh -T git@github.com  (test agent forwarding)
+
+Restart the VM (if needed):
+  gcloud compute instances stop remote-dev --zone=us-west1-b
+  gcloud compute instances start remote-dev --zone=us-west1-b
+
+================================================================================

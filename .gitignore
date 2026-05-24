@@ -1,0 +1,24 @@
+# =============================================================================
+# GCP Remote Dev VM — .gitignore
+# =============================================================================
+
+# Personal config (contains real project IDs, emails, network names)
+# Copy config.env.example → config.env and fill in your values
+# *.env covers config.env and any other env files (staging.env, etc.)
+# config.env.example is NOT matched (ends in .example) and IS committed
+*.env
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Cline AI assistant workspace metadata (tool-specific, not project code)
+skills-lock.json
+.agents/

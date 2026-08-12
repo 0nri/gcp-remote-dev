@@ -71,7 +71,7 @@ gcloud compute instances get-serial-port-output remote-dev \
 **First-time only — authorize your SSH key on the VM** (skip if you set `SSH_PUBLIC_KEY` in config.env):
 
 ```bash
-gcloud compute ssh remote-dev \
+gcloud compute ssh <VM_USER>@remote-dev \
   --tunnel-through-iap --zone=us-west1-b --project=YOUR_PROJECT_ID
 ```
 

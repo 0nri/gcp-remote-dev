@@ -151,7 +151,7 @@ if [[ -n "$SSH_PUBLIC_KEY" ]]; then
   chown -R "${VM_USER}:${VM_USER}" "${USER_HOME}/.ssh"
   log "  SSH public key written to ${USER_HOME}/.ssh/authorized_keys."
 else
-  log "  No SSH_PUBLIC_KEY in metadata — use 'gcloud compute ssh' to bootstrap key."
+  log "  No SSH_PUBLIC_KEY in metadata — use 'gcloud compute ssh ${VM_USER}@${VM_NAME}' to bootstrap key."
 fi
 
 # =============================================================================

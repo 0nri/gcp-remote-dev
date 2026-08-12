@@ -19,7 +19,7 @@ The VM uses public-key SSH authentication. Your public key must be in the VM's
 
 Option A — gcloud compute ssh (easiest, no config.env change needed):
 
-  gcloud compute ssh remote-dev \
+  gcloud compute ssh <VM_USER>@remote-dev \
     --tunnel-through-iap \
     --zone=us-west1-b \
     --project=YOUR_PROJECT_ID
@@ -126,7 +126,7 @@ Option B — Command Palette:
 Option C — Direct terminal SSH:
   ssh remote-dev
   # Or equivalently:
-  gcloud compute ssh remote-dev --tunnel-through-iap --zone=us-west1-b --project=YOUR_PROJECT_ID
+  gcloud compute ssh <VM_USER>@remote-dev --tunnel-through-iap --zone=us-west1-b --project=YOUR_PROJECT_ID
 
 ================================================================================
 STEP 6 — First-time VS Code Remote setup

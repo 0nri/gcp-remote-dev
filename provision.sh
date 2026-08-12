@@ -205,7 +205,7 @@ if [[ -n "$SSH_PUBLIC_KEY" ]]; then
 echo "   SSH_PUBLIC_KEY was set — your key is already in authorized_keys."
 else
 echo "   Run once to upload your SSH key to the VM:"
-echo "   gcloud compute ssh ${VM_NAME} --tunnel-through-iap --zone=${ZONE} --project=${PROJECT_ID}"
+echo "   gcloud compute ssh ${VM_USER}@${VM_NAME} --tunnel-through-iap --zone=${ZONE} --project=${PROJECT_ID}"
 fi
 echo ""
 echo "3. Add the following to ~/.ssh/config on each client machine:"

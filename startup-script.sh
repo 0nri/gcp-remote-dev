@@ -37,10 +37,13 @@ VM_USER=$(get_meta "vm-user" "user")
 PROJECT_ID=$(get_meta "project-id" "")
 VERTEX_REGION=$(get_meta "vertex-region" "global")
 CLAUDE_MODEL=$(get_meta "claude-model" "claude-opus-4-7")
-SSH_PUBLIC_KEY=$(get_meta "ssh-public-key" "")
+INSTALL_AGY=$(get_meta "install-agy" "true")
+INSTALL_CLAUDE=$(get_meta "install-claude" "false")
+ACCESS_MODE=$(get_meta "access-mode" "iap")
 USER_HOME="/home/${VM_USER}"
 
-log "Config: user=${VM_USER}  project=${PROJECT_ID}  vertex=${VERTEX_REGION}  claude=${CLAUDE_MODEL}"
+log "Config: user=${VM_USER}  project=${PROJECT_ID}  vertex=${VERTEX_REGION}  claude=${CLAUDE_MODEL}  access=${ACCESS_MODE}"
+log "AI tools (installed by setup-user.sh): agy=${INSTALL_AGY}  claude=${INSTALL_CLAUDE}"
 
 # =============================================================================
 # 2. Wait for metadata server (available before external network is ready)
@@ -88,8 +91,20 @@ apt-get install -y \
   libncursesw5-dev xz-utils tk-dev \
   liblzma-dev libgdbm-dev libnss3-dev \
   ca-certificates gnupg apt-transport-https \
-  software-properties-common
+  software-properties-common \
+  mosh tmux locales
 log "Base packages installed."
+
+# Mosh clients (Termius included) start mosh-server with LANG=en_US.UTF-8, but
+# Ubuntu cloud images only ship C.UTF-8 — without this mosh-server refuses to start.
+locale-gen en_US.UTF-8
+
+# Orphaned mosh-servers (e.g. iOS killed the client) keep holding a UDP port.
+# Exit them after 24h with no client contact so the narrow 60000-60010 range
+# opened in public mode isn't exhausted. /etc/zsh/zshenv is read by every zsh,
+# including the non-interactive 'zsh -c "mosh-server new ..."' mosh runs via SSH.
+echo 'export MOSH_SERVER_NETWORK_TMOUT=86400' >> /etc/zsh/zshenv
+log "  en_US.UTF-8 locale generated; mosh-server idle timeout set (24h)."
 
 # =============================================================================
 # 5. Automatic security updates (unattended-upgrades)
@@ -142,16 +157,51 @@ chmod 440 "/etc/sudoers.d/${VM_USER}"
 visudo -c -f "/etc/sudoers.d/${VM_USER}"
 log "  Passwordless sudo configured and validated."
 
-# Write SSH public key to authorized_keys if provided via metadata
-if [[ -n "$SSH_PUBLIC_KEY" ]]; then
-  mkdir -p "${USER_HOME}/.ssh"
-  chmod 700 "${USER_HOME}/.ssh"
-  echo "$SSH_PUBLIC_KEY" >> "${USER_HOME}/.ssh/authorized_keys"
-  chmod 600 "${USER_HOME}/.ssh/authorized_keys"
-  chown -R "${VM_USER}:${VM_USER}" "${USER_HOME}/.ssh"
-  log "  SSH public key written to ${USER_HOME}/.ssh/authorized_keys."
+# SSH public keys are NOT written here: provision.sh puts them in the 'ssh-keys'
+# instance metadata and google-guest-agent keeps authorized_keys in sync (it may
+# even create VM_USER before this script runs — handled by the branch above).
+log "  SSH keys managed by google-guest-agent from 'ssh-keys' metadata."
+
+# =============================================================================
+# 6b. SSH hardening (all modes) + fail2ban (public mode only)
+# =============================================================================
+log "Hardening sshd..."
+# Named 10-* so it wins over the image's 60-cloudimg-settings.conf: for most
+# sshd options the FIRST value read is the one used, and drop-ins load in
+# lexical order.
+cat > /etc/ssh/sshd_config.d/10-remote-dev.conf <<EOF
+# Managed by remote-dev startup script
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers ${VM_USER}
+MaxAuthTries 3
+LoginGraceTime 20
+EOF
+if sshd -t; then
+  systemctl restart ssh.service
+  log "  sshd hardened (key-only, no root, AllowUsers ${VM_USER})."
 else
-  log "  No SSH_PUBLIC_KEY in metadata — use 'gcloud compute ssh ${VM_USER}@${VM_NAME}' to bootstrap key."
+  rm -f /etc/ssh/sshd_config.d/10-remote-dev.conf
+  log "  WARNING: sshd rejected hardening config — removed it; image defaults remain."
+fi
+
+if [[ "$ACCESS_MODE" == "public" ]]; then
+  # In IAP mode every connection arrives from Google's IAP proxy range, so
+  # banning by source IP would lock out legitimate users — public mode only.
+  log "Installing fail2ban (public mode)..."
+  apt-get install -y fail2ban python3-systemd
+  cat > /etc/fail2ban/jail.d/remote-dev.local <<'F2B_EOF'
+[sshd]
+enabled  = true
+backend  = systemd
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+F2B_EOF
+  systemctl enable fail2ban
+  systemctl restart fail2ban
+  log "  fail2ban sshd jail active (5 failures / 10m → 1h ban)."
 fi
 
 # =============================================================================
@@ -256,15 +306,29 @@ log "Starting dev environment setup for $(whoami)..."
 log "This will take approximately 5-10 minutes."
 echo ""
 
+# Tool selection comes from instance metadata (set by provision.sh via INSTALL_TOOLS).
+# Defaults if absent: Antigravity CLI only.
+meta() {
+  curl -sf "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1" \
+    -H "Metadata-Flavor: Google" 2>/dev/null || echo "$2"
+}
+INSTALL_AGY=$(meta install-agy true)
+INSTALL_CLAUDE=$(meta install-claude false)
+log "Selected AI tools: agy=${INSTALL_AGY}  claude=${INSTALL_CLAUDE}"
+
 # =============================================================================
 # 1. Claude Code (installed as user — limits blast radius of curl|bash)
 # =============================================================================
-log "Installing Claude Code..."
-if ! command -v claude &>/dev/null && [[ ! -f "$HOME/.local/bin/claude" ]]; then
-  curl -fsSL https://claude.ai/install.sh | bash
-  log "  Claude Code installed."
+if [[ "$INSTALL_CLAUDE" == "true" ]]; then
+  log "Installing Claude Code..."
+  if ! command -v claude &>/dev/null && [[ ! -f "$HOME/.local/bin/claude" ]]; then
+    curl -fsSL https://claude.ai/install.sh | bash
+    log "  Claude Code installed."
+  else
+    log "  Claude Code already installed — skipping."
+  fi
 else
-  log "  Claude Code already installed — skipping."
+  log "Claude Code not selected — skipping."
 fi
 
 # Add ~/.local/bin to PATH for this session if needed
@@ -275,12 +339,16 @@ fi
 # =============================================================================
 # 2. Antigravity CLI (installed as user — limits blast radius of curl|bash)
 # =============================================================================
-log "Installing Antigravity CLI..."
-if ! command -v agy &>/dev/null && [[ ! -f "$HOME/.local/bin/agy" ]]; then
-  curl -fsSL https://antigravity.google/cli/install.sh | bash
-  log "  Antigravity CLI installed."
+if [[ "$INSTALL_AGY" == "true" ]]; then
+  log "Installing Antigravity CLI..."
+  if ! command -v agy &>/dev/null && [[ ! -f "$HOME/.local/bin/agy" ]]; then
+    curl -fsSL https://antigravity.google/cli/install.sh | bash
+    log "  Antigravity CLI installed."
+  else
+    log "  Antigravity CLI already installed — skipping."
+  fi
 else
-  log "  Antigravity CLI already installed — skipping."
+  log "Antigravity CLI not selected — skipping."
 fi
 
 # =============================================================================
@@ -1072,8 +1140,8 @@ log "  Bootstrap .zshrc written."
 # =============================================================================
 log "======================================================================"
 log "✅ System setup complete!"
-log "   Installed: gcloud, node $(node --version), gh"
-log "   AI tools (user-space): claude, antigravity-cli — run setup-user.sh"
+log "   Installed: gcloud, node $(node --version), gh, mosh, tmux"
+log "   AI tools (user-space, via setup-user.sh): agy=${INSTALL_AGY}  claude=${INSTALL_CLAUDE}"
 log "   Vertex AI env vars: /etc/profile.d/ai-tools.sh"
 log "   User ${VM_USER}: created with zsh + passwordless sudo"
 log "   Next step: SSH in as ${VM_USER} and run:  bash ~/setup-user.sh"

@@ -8,6 +8,9 @@
 # config.env.example is NOT matched (ends in .example) and IS committed
 *.env
 
+# Personal list of SSH public keys (SSH_KEYS_FILE in config.env)
+authorized_keys
+
 # macOS
 .DS_Store
 

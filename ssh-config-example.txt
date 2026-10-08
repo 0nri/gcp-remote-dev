@@ -1,52 +1,56 @@
 ================================================================================
   GCP Remote Dev VM — Client Setup Guide
-  VM: remote-dev  |  User: <VM_USER>  |  Access: IAP Tunnel (no public IP)
+  VM: remote-dev  |  User: <VM_USER>  |  Access: IAP Tunnel (default) or Public IP
 ================================================================================
 
 This guide covers everything needed on each client machine (Mac, Windows, Linux)
 to connect to the remote-dev VM via VS Code Remote SSH.
 
 Prerequisites on the client:
-  - gcloud CLI installed and authenticated (gcloud auth login)
+  - gcloud CLI installed and authenticated (gcloud auth login) — IAP mode only
   - VS Code with the "Remote - SSH" extension installed
 
 ================================================================================
-STEP 1 — Bootstrap SSH key (first time only)
+STEP 1 — Authorize this device's SSH key
 ================================================================================
 
-The VM uses public-key SSH authentication. Your public key must be in the VM's
-~/.ssh/authorized_keys before 'ssh remote-dev' will work. Two options:
+The VM uses public-key SSH authentication with ONE KEY PER DEVICE. Every
+public key listed in SSH_KEYS_FILE (default ./authorized_keys next to
+provision.sh) is pushed to the VM as 'ssh-keys' instance metadata, and the
+VM's guest agent keeps ~/.ssh/authorized_keys in sync with it.
 
-Option A — gcloud compute ssh (easiest, no config.env change needed):
+On the machine you provisioned from:
+  If SSH_KEYS_FILE was empty, provision.sh generated ~/.ssh/<VM_NAME>_ed25519
+  (e.g. ~/.ssh/remote-dev_ed25519) and authorized it — nothing more to do.
 
-  gcloud compute ssh <VM_USER>@remote-dev \
-    --tunnel-through-iap \
-    --zone=us-west1-b \
-    --project=YOUR_PROJECT_ID
+For an additional desktop/laptop:
+  1. On that machine:   ssh-keygen -t ed25519 -f ~/.ssh/remote-dev_ed25519
+  2. Copy the .pub contents to the provisioning machine, append it to
+     authorized_keys, and run:   ./provision.sh --update-keys
+  To revoke a device later, delete its line and run --update-keys again.
 
-  This generates ~/.ssh/google_compute_engine if it doesn't exist, uploads
-  the public key to GCP metadata, and the VM syncs it to authorized_keys.
-  Run this ONCE — all subsequent connections use ~/.ssh/config (Step 2).
-  Note: use IdentityFile ~/.ssh/google_compute_engine in your SSH config (see Step 2).
-
-Option B — set SSH_PUBLIC_KEY in config.env before provisioning:
-
-  Paste the contents of your public key (e.g. cat ~/.ssh/id_ed25519.pub)
-  into SSH_PUBLIC_KEY in config.env. The startup script writes it to
-  authorized_keys at first boot — no gcloud compute ssh needed.
-  Note: use IdentityFile ~/.ssh/id_ed25519 (or your key) in your SSH config.
+Fallback — gcloud compute ssh (must use <VM_USER>@; sshd only allows VM_USER):
+  gcloud compute ssh <VM_USER>@remote-dev --tunnel-through-iap \
+    --zone=us-west1-b --project=YOUR_PROJECT_ID
+  (public mode: omit --tunnel-through-iap)
+  Note: the next --update-keys replaces the VM's ssh-keys metadata with
+  SSH_KEYS_FILE, which removes keys gcloud added — add them to the file to keep them.
 
 ================================================================================
 STEP 2 — Add to ~/.ssh/config
 ================================================================================
 
-Open ~/.ssh/config (create it if it doesn't exist) and add:
+Open ~/.ssh/config (create it if it doesn't exist) and add ONE of the following,
+matching the ACCESS_MODE you provisioned with.
+
+(A) ACCESS_MODE="iap" (default):
 
   # ── GCP Remote Dev VM ──────────────────────────────────────────────────────
   Host remote-dev
     HostName remote-dev
     User <VM_USER>                 # ← replace with your VM_USER value from config.env
-    IdentityFile ~/.ssh/google_compute_engine   # ← or your key if you used Option B
+    IdentityFile ~/.ssh/remote-dev_ed25519      # ← this device's key (Step 1)
+    IdentitiesOnly yes             # offer only that key (server allows 3 attempts)
     ForwardAgent yes
     ProxyCommand gcloud compute start-iap-tunnel %h %p \
       --listen-on-stdin \
@@ -56,10 +60,34 @@ Open ~/.ssh/config (create it if it doesn't exist) and add:
     UserKnownHostsFile /dev/null
   # ───────────────────────────────────────────────────────────────────────────
 
-Replace YOUR_PROJECT_ID with your actual GCP project ID.
+  Replace YOUR_PROJECT_ID with your actual GCP project ID.
 
-Note: The ProxyCommand tunnels SSH through Google's IAP — no SSH port is
-      exposed to the internet. The VM has no public IP.
+  Note: The ProxyCommand tunnels SSH through Google's IAP — no SSH port is
+        exposed to the internet. The VM has no public IP.
+
+(B) ACCESS_MODE="public":
+
+  # ── GCP Remote Dev VM ──────────────────────────────────────────────────────
+  Host remote-dev
+    HostName <STATIC_IP>           # ← printed by provision.sh, or:
+                                   #   gcloud compute addresses describe remote-dev-ip \
+                                   #     --region=us-west1 --format='value(address)'
+    User <VM_USER>
+    IdentityFile ~/.ssh/remote-dev_ed25519      # ← this device's key (Step 1)
+    IdentitiesOnly yes             # offer only that key (server allows 3 attempts)
+    ForwardAgent yes
+  # ───────────────────────────────────────────────────────────────────────────
+
+  Mosh (public mode only): install locally (macOS: brew install mosh), then
+    mosh remote-dev
+  Sessions survive sleep and network changes. Agent forwarding does NOT carry
+  over into Mosh sessions — use plain ssh for git-over-SSH, or gh auth (HTTPS).
+
+  iPhone/iPad: see TERMIUS_IOS.md.
+
+  Note: SSH connects directly to the VM's reserved static IP. tcp:22 (SSH) and
+        udp:60000-60010 (Mosh) are open to the internet for this VM only;
+        authentication is key-only and fail2ban bans repeated failures.
 
 ================================================================================
 STEP 3 — MesloLGS NF Font (for Powerlevel10k)
@@ -87,8 +115,8 @@ STEP 4 — GitHub Access via SSH Agent Forwarding
 ================================================================================
 
 The SSH config above includes "ForwardAgent yes", which forwards your local
-SSH agent through the IAP tunnel. The VM uses your Mac's GitHub SSH key
-transparently — no key needs to live on the VM.
+SSH agent over the SSH connection (IAP tunnel or public IP). The VM uses your
+Mac's GitHub SSH key transparently — no key needs to live on the VM.
 
 To ensure your GitHub key is always available (even after a Mac restart),
 add UseKeychain yes to your existing GitHub SSH config entry:
@@ -125,7 +153,7 @@ Option B — Command Palette:
 
 Option C — Direct terminal SSH:
   ssh remote-dev
-  # Or equivalently:
+  # Or equivalently (public mode: omit --tunnel-through-iap):
   gcloud compute ssh <VM_USER>@remote-dev --tunnel-through-iap --zone=us-west1-b --project=YOUR_PROJECT_ID
 
 ================================================================================
@@ -146,6 +174,9 @@ STEP 7 — Using AI tools
 
 In the VS Code integrated terminal (connected to the VM):
 
+  Which CLIs are present depends on INSTALL_TOOLS in config.env
+  (default: agy only; set INSTALL_TOOLS="agy,claude" for both).
+
   Antigravity CLI:
     agy                       # interactive mode
     agy -p "explain this"     # one-shot query
@@ -154,8 +185,8 @@ In the VS Code integrated terminal (connected to the VM):
     claude                    # interactive mode
     claude "help me refactor" # one-shot query
 
-  Authentication is automatic — the VM uses its GCP service account via
-  Workload Identity (no API keys required).
+  Authentication is automatic — the VM uses its attached GCP service account
+  (credentials come from the metadata server; no API keys required).
 
 Claude Code VS Code Extension:
   Install the "Claude Code" extension in the remote window. It will
@@ -166,7 +197,8 @@ TROUBLESHOOTING
 ================================================================================
 
 "Permission denied (publickey)":
-  - Did you complete Step 1 (bootstrap SSH key)?
+  - Is this device's public key in authorized_keys, and did you run
+    ./provision.sh --update-keys (Step 1)?
   - Is IdentityFile set in ~/.ssh/config and pointing to the right key?
   - Run: ssh -v remote-dev  to see which keys SSH is trying
 
